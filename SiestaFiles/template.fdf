@@ -1,0 +1,40 @@
+SystemName			TNT Cellulose Harrison Test
+SystemLabel			template
+# This is a template file used in the MC code by Tristan Truttmann.
+# This particular file uses a Harris functional, minimal basis set and a soft confinement potential.
+# It is made to be used with *.psf files downloaded form the internet.
+NumberOfAtoms			273
+NumberOfSpecies			4
+# If you change any of the the following 3 lines,
+# please also change line 69 in MC_Util.py accordingly. Note: update the line number when you are done.
+XC.functional			LDA
+XC.authors				PZ
+Harris_functional		.true.
+PAO.BasisType			nonodes
+PAO.BasisSize			SZ
+PAO.SoftDefault			.true.
+%block ps.lmax
+C	1
+O	1
+N	1
+H	0
+%endblock ps.lmax
+
+%block ChemicalSpeciesLabel
+ 1  6  C
+ 2  8  O
+ 3  7  N
+ 4  1  H
+%endblock ChemicalSpeciesLabel
+
+LatticeConstant				1 Ang
+
+%block LatticeVectors
+21.15794	-0.00842	-0.01916
+8.25435		-18.67275	-0.196155
+0.0000		0.0000		30.0000
+%endblock LatticeVectors
+
+AtomicCoordinatesFormat		Ang
+
+# Here the python script will append the geometry:
