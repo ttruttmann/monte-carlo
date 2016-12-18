@@ -27,6 +27,24 @@ else:
 sys.path.append(CommandHome)
 
 #====================================================================================
+def bias(config, history, MetaHeight, MetaWidths):
+# Funciton that generates a bias based on user prefrences and sampling history. 
+#====================================================================================
+# Note: when this is implimented, make sure that the bias is calculated before the history is changed.
+# Note: Some day I might make the Gaussians spill over to the next unit cell, or the next rotational 
+# element on a sphere.  I might also make the guassians have a equal span in linear distance 
+# on the surface of a sphere. 
+    try:
+        present = config.FloppyCoord()
+        BiasEnergy = np.sum((MetaHeight * np.exp(-1/2*(present-history)**2/MetaWidths**2)))
+        return BiasEnergy
+    except:
+        raise
+# Note: function under contruction: 
+    
+
+
+#====================================================================================
 class PTableClass:
 # Class that contains two methods:
 ## <anum(sym)> Accepts atomic symbol (string) and returns atomic number (int).
@@ -71,8 +89,40 @@ ptable = PTableClass()
 class FileFormatError(Exception): pass
 # Raised when dimenstions of a ConfigClasses anum and coord arrays to not align:
 class SizeInconsistency(Exception): pass
-
-
+# Raised when there is a linear angle that is interfering with angle calculations: 
+class LinearAngleError(Exception): pass
+    
+#====================================================================================
+def angle(v1,v2,PosN = None):
+# This funciton returns the angle between two 3-vectors.  It returns degrees. 
+# If PosN is specified, If the cross between the two vectors is more-or-less in the 
+# opposite direction as <PosN>, then the returned angle is negative.  
+#====================================================================================  
+    try: 
+        if (v1.size != 3) or (v2.size != 3):
+            raise ValueError
+        TheCos = np.dot(v1,v2)/(np.linalg.norm(v1)*np.linalg.norm(v2))
+        # Occasionally, TheSin will be slighter greater than 1 due to machine error.
+        # I added a quick condition to fix this:
+        if TheCos > 1:
+            radians = 0.
+        else:
+            radians = np.arccos(TheCos)
+        degrees = np.rad2deg(radians)
+        # However if a normal vector <PosN> is supplied, the angle maybe be negative
+        # according to the right hand rule.
+        if not np.array_equal(PosN, None):
+            if np.dot( np.cross(v1,v2) ,PosN) < 0:
+                degrees = -degrees
+            elif (np.dot( np.cross(v1,v2), PosN) == 0) and (np.linalg.norm(np.cross(v1,v2)) > 0):
+                raise LinearAngleError
+        return degrees
+    except ValueError: 
+        sys.stderr.write("The vectors must be 3 dimensions for angle to work.")
+        raise
+    except LinearAngleError:
+        sys.stderr.write("You chose a refrence normal vector that is perpendicular to the actual cross vector.  You surely made a mistake." )
+        raise
 
 #====================================================================================
 class ConfigClass:
@@ -88,9 +138,10 @@ class ConfigClass:
 #   E:                  Storing the energy of the configuration in eV. Default 0.0
 #
 #   bias:               A float storing the selectino bias that was used to acheive the
-#                       configuration in the MC. Default 1.0.
+#                       configuration in the MC. Default 1.0. Higher values mean it 
+#                       should be weighted lower for ensemble calculation. 
 #
-#   AdsorbateSize:      An integer storing the number of atoms in the adsorbate.
+#   AdmoleculeSize:      An integer storing the number of atoms in the admolecule.
 #
 #   LatticeMatrix:      A 3x3 array storing the 3 lattice vectors of the whole system.
 #                       Default None.
@@ -105,10 +156,10 @@ class ConfigClass:
 #   centroid():         Returns the centroid of the system as a 3-element numpy array.
 #
 #   adsorbent():        Returns another ConfigClass that only contains the atoms of the
-#                       adsorbent. Only works if AdsorbateSize is properly defined.
+#                       adsorbent. Only works if AdmoleculeSize is properly defined.
 #
-#   adsorbate():        Returns another ConfigClass that only contains the atoms of the
-#                       ad-molecule. Only works if AdsorbateSize is properly defined.
+#   admolecule():        Returns another ConfigClass that only contains the atoms of the
+#                       ad-molecule. Only works if AdmoleculeSize is properly defined.
 #
 #   verify():           Checks to ensure that the sizes of anum and coord are consistent.
 #                       Raises an error if they are inconsisstent.
@@ -141,6 +192,11 @@ class ConfigClass:
 #                       files. Will append to files named GeomEnsemble.xyz,
 #                       EnergyEnsemble.py, and ConfigEnsemble.py.
 #
+#   FloppyCoord():      Returns the centroid of the admolecule as well as the euler
+#                       angles defining the orientation of the admolecule with repsect
+#                       to the global xyz coordinate system.  See the code for
+#                       how the angles are determined.  
+#
 # Note: I need to later make a function to get the lattice infomraiton from the file.
 #====================================================================================
     def __init__(self,father=None):
@@ -150,7 +206,7 @@ class ConfigClass:
             self.coord = np.zeros((0,3), dtype=float)
             self.E = 0.0
             self.bias = 1.0
-            self.AdsorbateSize = None
+            self.AdmoleculeSize = None
             self.LatticeMatrix = None
             self.SubLatticeGrid = None # Note: Make sure I'm using these things!
         # If the argument is a string, then it attempts to read it as an xyz file:
@@ -159,7 +215,7 @@ class ConfigClass:
                 # First some defaults are set that are not available from the xyz file:
                 self.E = 0.0
                 self.bias = 1.0
-                self.AdsorbateSize = None
+                self.AdmoleculeSize = None
                 self.LatticeMatrix = None
                 self.SubLatticeGrid = None # Note: Change shepperd to use these!
                 # It opens the file and reads the number of atoms from line 1:
@@ -204,7 +260,7 @@ class ConfigClass:
                 self.anum = CopyConfig.anum
                 self.coord = CopyConfig.coord
                 self.E = CopyConfig.E
-                self.AdsorbateSize = CopyConfig.AdsorbateSize
+                self.AdmoleculeSize = CopyConfig.AdmoleculeSize
                 self.bias = CopyConfig.bias
                 self.LatticeMatrix = CopyConfig.LatticeMatrix
                 self.SubLatticeGrid = CopyConfig.SubLatticeGrid
@@ -287,31 +343,31 @@ class ConfigClass:
         return np.average(self.coord,axis=0)
         
     # Returns a new ConfigClass instance that represents the adsorbent. Only works if 
-    # AdsorbateSize is properly defined:
+    # AdmoleculeSize is properly defined:
     def adsorbent(self):
         # First it makes a copy of self and declares a new ConfigClass:
         TotalSystem = copy.deepcopy(self)
         NewConfig = ConfigClass()
         # Then is assigns values to attributes appropriately:
-        NewConfig.anum = TotalSystem.anum[: len(TotalSystem.anum)-TotalSystem.AdsorbateSize]
-        NewConfig.coord = TotalSystem.coord[: len(TotalSystem.coord)-TotalSystem.AdsorbateSize]
+        NewConfig.anum = TotalSystem.anum[: len(TotalSystem.anum)-TotalSystem.AdmoleculeSize]
+        NewConfig.coord = TotalSystem.coord[: len(TotalSystem.coord)-TotalSystem.AdmoleculeSize]
         NewConfig.E = 0.0
         NewConfig.bias = TotalSystem.bias
-        NewConfig.AdsorbateSize = TotalSystem.AdsorbateSize
+        NewConfig.AdmoleculeSize = TotalSystem.AdmoleculeSize
         NewConfig.LatticeMatrix = None
         NewConfig.SubLatticeGrid = None
         return NewConfig
         
-    # Returns a new ConfigClass instance that represents the adsorbate. Only works 
-    # if AdsorbateSize is properly defined:
-    def adsorbate(self):
+    # Returns a new ConfigClass instance that represents the admolecule. Only works 
+    # if AdmoleculeSize is properly defined:
+    def admolecule(self):
         TotalSystem = copy.deepcopy(self)
         NewConfig = ConfigClass()
-        NewConfig.anum = TotalSystem.anum[len(TotalSystem.anum)-TotalSystem.AdsorbateSize :]
-        NewConfig.coord = TotalSystem.coord[len(TotalSystem.coord)-TotalSystem.AdsorbateSize:]
+        NewConfig.anum = TotalSystem.anum[len(TotalSystem.anum)-TotalSystem.AdmoleculeSize :]
+        NewConfig.coord = TotalSystem.coord[len(TotalSystem.coord)-TotalSystem.AdmoleculeSize:]
         NewConfig.E = 0.0
         NewConfig.bias = TotalSystem.bias
-        NewConfig.AdsorbateSize = TotalSystem.AdsorbateSize
+        NewConfig.AdmoleculeSize = TotalSystem.AdmoleculeSize
         NewConfig.LatticeMatrix = None
         NewConfig.SubLatticeGrid = None
         return NewConfig
@@ -357,7 +413,8 @@ class ConfigClass:
         # Then it imports numpy:
         buffer = 'import numpy as np\n'
         # Then it initializes an empty numpy array:
-        buffer += 'energy = np.array((),dtype=float\n'
+        buffer += 'energy = np.array((),dtype=float)\n'
+        buffer += 'bias = np.array((),dtype=float)\n'
         # Then it writes the buffer to the file:
         lock.acquire()
         file = open(FileName,'w')
@@ -374,6 +431,7 @@ class ConfigClass:
         lock.acquire()
         file = open(FileName,'a')
         file.write('energy = np.append(energy,' + str(self.E) + ')\n')
+        file.write('bias = np.append(bias,' + str(self.bias) + ')\n')
         file.close()
         lock.release()
         return
@@ -407,7 +465,7 @@ class ConfigClass:
         buffer += 'TempConfig.coord = ' + repr(self.coord) + '\n'
         buffer += 'TempConfig.E = ' + repr(self.E) + '\n'
         buffer += 'TempConfig.bias = ' + repr(self.bias) + '\n'
-        buffer += 'TempConfig.AdsorbateSize = ' + repr(self.AdsorbateSize) + '\n'
+        buffer += 'TempConfig.AdmoleculeSize = ' + repr(self.AdmoleculeSize) + '\n'
         buffer += 'TempConfig.LatticeMatrix = ' + repr(self.LatticeMatrix) + '\n'
         buffer += 'TempConfig.SubLatticeGrid = ' + repr(self.SubLatticeGrid) + '\n'
         buffer += 'ConfigList.append(ConfigClass(TempConfig))\n'
@@ -447,6 +505,55 @@ class ConfigClass:
         except AttributeError:
              sys.stdout.write('The first argument of ConfigClass().StartWrite() must be a string\n')
              raise
+             
+    def FloppyCoord(self):
+        # For the sake of clarity, my comments refer to global coredinates as 
+        # X,Y, and Z, and the local coordinates as x', y', and z'. 
+        try:
+            # First I define an empty six vector that will be edited and returned at end:
+            FloppyVec = np.zeros(6)
+            # Then the first three elements are filled with the centroid. 
+            FloppyVec[0:3] = self.centroid()
+            # Then the two vectors are created from the admolecule: 
+            admol = self.admolecule()
+            vec1 = admol.coord[1] - admol.coord[0]
+            vec2 = admol.coord[2] - admol.coord[1]
+            # Then it checks if the angle between them is near linear:
+            if angle(vec1,vec2) > 179 or angle(vec1,vec2) < 1: 
+                raise LinearAngleError
+            # Then vec1 is normalized and becomes x' 
+            LocalX = vec1 / np.linalg.norm(vec1)
+            # Then the component of vec2 that is perpendicular to x' is normalized 
+            # and used as y': 
+            LocalY = vec2 - np.dot(vec2,LocalX) * LocalX
+            LocalY = LocalY / np.linalg.norm(LocalY)
+            # Then I get z' simply by crossing x' and y'
+            LocalZ = np.cross(LocalX,LocalY)
+            # Then I define vector N as a means to find the proper Euler angles:
+            # In most cases, vecN is simply a cross product of Z and z':
+            if not np.array_equal(LocalZ, np.array((0,0,1))):     
+                vecN = np.cross(LocalZ, np.array((0,0,1)) )
+            # However if z' points in the Z direction, then vecN will be indentically 
+            # zero. This is not acceptable.  To combat this, we default vecN to the x' direction:
+            # Note: These choice may provide dangerous sampling bias. A future project will be to 
+            # analyze this in detail.  
+            else:
+                vecN = LocalX
+            # alpha is the angle between N and X.  I assign this to the 4th element of FloppyVec:
+            FloppyVec[3] = angle(np.array((1,0,0)), vecN, PosN = np.array((0,0,1)))
+            # beta is the angle between Z and z'.  I assign this to the 5th element of FloppyVec:
+            FloppyVec[4] = angle(np.array((0,0,1)), LocalZ)
+            # gamma is the angle between N and x'. I assign this the the 6th element of FloppyVec:
+            FloppyVec[5] = angle(vecN, LocalX, PosN = LocalZ)
+            # Then I return that 6-vector FloppyVec.  This contains all the coordinates
+            # that are floppy in a simple admolecule system.
+            # Then when I return the vector, I pad it in brackets so that it is a 2=rank
+            # tansor to make the concatenate() happy on the other end.
+            return np.array([FloppyVec])
+        except LinearAngleError:
+            print ("The angle between the first 3 atoms in your admolecule is very close to linear.  Consider changing the order of your admolecule atoms in your SIESTA input file (sorry).") 
+            raise
+            
 
 #========================================================================================================
 def RotateAxisAngle(conf, unit_axis, DegAngle):
@@ -455,13 +562,13 @@ def RotateAxisAngle(conf, unit_axis, DegAngle):
 #========================================================================================================
     newconf = copy.deepcopy(conf)
     RadAngle = DegAngle * np.pi / 180    
-
+    
     ct = np.cos(RadAngle)
     st = np.sin(RadAngle)
     u = unit_axis[0]
     v = unit_axis[1]
     w = unit_axis[2]
-      
+    
     x = copy.deepcopy(conf.coord[:,0])
     y = copy.deepcopy(conf.coord[:,1])
     z = copy.deepcopy(conf.coord[:,2])
@@ -506,6 +613,18 @@ def MC_Cycle(StartConfig, EnsembleSize, CommandHome, ScratchPath, WriteLock, Log
         from MC_Pref import T_Sequence
     except:
         from MC_Defaults import T_Sequence
+    try:
+        from MC_Pref import MetaDynamicsOn
+    except:
+        from MC_Defaults import MetaDynamicsOn
+    try:
+        from MC_Pref import MetaWidths
+    except:
+        from MC_Defaults import MetaWidths
+    try:
+        from MC_Pref import MetaHeight
+    except:
+        from MC_Defaults import MetaHeight   
 
     CycleLogger = Logger()
     CycleLogger.process.start()
@@ -513,12 +632,19 @@ def MC_Cycle(StartConfig, EnsembleSize, CommandHome, ScratchPath, WriteLock, Log
     # constants are defined:
 
     k = 8.6173324e-5 # in eV K^(-1) from Wikipedia.
+    # I also define an empty 2-rank tensor that will store the past positions of the admolecule: 
+    history = np.zeros((0,6))
+    # Note: In the future I am interested in trashing multiprocessing (it doesn't work for
+    # nodes anyways) and getting Parallel Python. I am also thinking about getting ride of 
+    # EnsembleSize and just using the size of history. (But history has to be shared first)
     # Then it begins the process of defining new structures and testing them:
     OldConfig = ConfigClass(StartConfig)
+    OldBiasE = 0.
     T_index = [0,0]
     while True:
         # First it handles the simulated anealing sequence:\
         # Note: Consider making this an iterable function.
+        # Note: if metadynamics goes really well, just get rid of thermal anealing. 
         T = T_Sequence[T_index[0]][1]
         T_index[1] += 1
         if T_index[1] == T_Sequence[T_index[0]][0]:
@@ -529,15 +655,19 @@ def MC_Cycle(StartConfig, EnsembleSize, CommandHome, ScratchPath, WriteLock, Log
         CandConfig = move(OldConfig,TransLimit,RhoLimitDeg) # Note: Update this move function for new configClass.
         CandConfig = shepherd(CandConfig) if ShepherdOn else CandConfig
         SIESTA(CandConfig,CommandHome,NumberOfSiestaCores,CycleLogger)
+        # Note: remember to change oldbias to new bias appropriately
+        if MetaDynamicsOn:
+            CandBiasE = bias(CandConfig, history, MetaHeight, MetaWidths)
+            CandBiasFactor = np.exp(-(CandBiasE-OldBiasE)/(k*T))
+        else:
+            CandBiasFactor = 1
+        # Note: Be very careful that the bias information gets recorded differently depending on who wins.  
         rand = np.random.random()
-        prob = np.exp((OldConfig.E-CandConfig.E)/(k*T))
+        prob = CandBiasFactor * np.exp(-(CandConfig.E-OldConfig.E)/(k*T))
         if rand <= prob:
-            CycleLogger.ReadWrite.start()
-            CandConfig.Write(CommandHome, lock = WriteLock)
-            CycleLogger.ReadWrite.stop() # Note: Consider making one big lock to preventthreading of writing processes.
+            CandConfig.bias = CandBiasFactor
             OldConfig = ConfigClass(CandConfig) # This is a way to assign without side-effects
             # Note: this is a big mess.  Fix all this some time.
-            EnsembleSize.value = EnsembleSize.value + 1
             CycleLogger.hit()
             if Optimize:
                 TransLimit = TransLimit * 1.05
@@ -548,11 +678,21 @@ def MC_Cycle(StartConfig, EnsembleSize, CommandHome, ScratchPath, WriteLock, Log
                 break
         else:
             CycleLogger.miss()
+            OldConfig.bias = 1 / CandBiasFactor
             print "The TransLimit = " + str(TransLimit) # Note: Delete these. For debuggin purposes.
             print "The RhoLimitDeg = " + str(RhoLimitDeg)
             if Optimize:
                 TransLimit = TransLimit * 0.95
                 RhoLimitDeg = RhoLimitDeg * 0.95
+        CycleLogger.ReadWrite.start()
+        CandConfig.Write(CommandHome, lock = WriteLock)
+        CycleLogger.ReadWrite.stop() # Note: Consider making one big lock to preventthreading of writing processes.
+        EnsembleSize.value = EnsembleSize.value + 1
+        # Recording the position for future metadynamics biasing:            
+        history = np.concatenate((history,OldConfig.FloppyCoord()),axis=0)
+        # Then I redefine the bias for the OldConfig using the OldConfig's new (or old)
+        # geometry and the new history. 
+        OldBiasE = bias(OldConfig, history, MetaHeight, MetaWidths)
         CycleLogger.ReadWrite.start()
         CycleLogger.summary(CommandHome + '/time.log',WriteLock)
         CycleLogger.ReadWrite.stop() # Note: I'm not yet sure if I should do this outside or inside the summary funciton.
@@ -640,7 +780,7 @@ def SIESTA(config,CommandHome,NumberOfSiestaCores,Logger):
 #====================================================================================
 def move(config,TransLimit,RhoLimitDeg):
 # Returns a randomly pertubed configuration given an original configuration. This
-# function works with any single molecule absorbate system as long as the adsorbate
+# function works with any single molecule absorbate system as long as the admolecule
 # is the last atoms listed in the ConfigClass. Translates it over a flat distribution
 # in any direction and rotates it over a flast angle distribution on a random axis.
 #====================================================================================
@@ -664,14 +804,14 @@ def move(config,TransLimit,RhoLimitDeg):
     # Note: Here is a good place to get material for my honors!
     # Note: My convension is the rho is the rotation around r and phi and theta describe r vector.  Clarify this in the code.
     # Note: I also changed my scheme to move the atom.  So I should maybe expalin all that.
-    adsorbate = config.adsorbate() # Note: Consider deleting this line.
+    admolecule = config.admolecule() # Note: Consider deleting this line.
     SystemSize=len(CopyConfig.anum) # Note: Consider deleting this line
-    offset = adsorbate.centroid()
-    adsorbate.coord = adsorbate.coord - offset
-    adsorbate = RotateAxisAngle(adsorbate,RandAxis,RandRho)
-    adsorbate.coord = adsorbate.coord + RandTrans + offset
+    offset = admolecule.centroid()
+    admolecule.coord = admolecule.coord - offset
+    admolecule = RotateAxisAngle(admolecule,RandAxis,RandRho)
+    admolecule.coord = admolecule.coord + RandTrans + offset
     NewConfig = ConfigClass(CopyConfig) # Note: Make a notational choice of whether I deep copy or use the initializer.
-    NewConfig.coord[SystemSize-config.AdsorbateSize:SystemSize] = adsorbate.coord
+    NewConfig.coord[SystemSize-config.AdmoleculeSize:SystemSize] = admolecule.coord
     return NewConfig
 
 #====================================================================================
@@ -699,8 +839,8 @@ def moveR(config,Dummy,TransLimit,dummy):
 
 #====================================================================================
 def shepherd(config):
-# This function checks if the adsorbate centroid is more than 1 unit cell from the
-# adsorbate centroid in X or Y, and, if so, moves it 1 unit cell back toward the centroid.
+# This function checks if the admolecule centroid is more than 1 unit cell from the
+# admolecule centroid in X or Y, and, if so, moves it 1 unit cell back toward the centroid.
 # Note: Impliment this into the actual cycle funcition.
 # Note: This actually doesn't see mto be working that well so reconsider a way to make it actually on the midle microcell.
 # Note: Fix this so it actually confines it to one unitcell.
@@ -710,13 +850,13 @@ def shepherd(config):
         from MC_Pref import SubLatticeGrid
     except ImportError:
         from MC_Defults import SubLatticeGrid
-    # This defines a small lattice basis matrix and objects that represent the two bodies (adsorbant adsorbate):
+    # This defines a small lattice basis matrix and objects that represent the two bodies (adsorbant admolecule):
     fence = config.LatticeMatrix / SubLatticeGrid
     adsorbent=ConfigClass(config.adsorbent())
-    adsorbate=ConfigClass(config.adsorbate())
+    admolecule=ConfigClass(config.admolecule())
     SystemSize=len(CopyConfig.anum)
     # Then it computes the cetnroids and the vector difference between them:
-    dCentroid = adsorbate.centroid() - adsorbent.centroid()
+    dCentroid = admolecule.centroid() - adsorbent.centroid()
     # Then it projects the difference in centroids onto the lattice basis.
     coeff = np.linalg.solve(fence,dCentroid)
     # Then it gets rid of leading whole numbers on the lattice vector coefficients...
@@ -724,9 +864,9 @@ def shepherd(config):
     # ...resulting vectors from the adsorbates position:
     ModCoeff = ((coeff+0.5)%1)-0.5
     yank = np.dot(fence,(ModCoeff-coeff))
-    adsorbate.coord = adsorbate.coord + yank
+    admolecule.coord = admolecule.coord + yank
     NewConfig = ConfigClass(CopyConfig) # Note: I might want to use deepcopy in these cases because it's faster and I don't have to check it.
-    NewConfig.coord[SystemSize-config.AdsorbateSize:SystemSize] = adsorbate.coord # Note: Once again, it feels silly that I am copying twice like this.  Find a graceful way to get this done.
+    NewConfig.coord[SystemSize-config.AdmoleculeSize:SystemSize] = admolecule.coord # Note: Once again, it feels silly that I am copying twice like this.  Find a graceful way to get this done.
     return NewConfig
 
 #====================================================================================

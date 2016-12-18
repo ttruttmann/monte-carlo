@@ -5,7 +5,7 @@
 #PBS -o output/output.pbs
 #PBS -e output/error.pbs
 #PBS -l walltime=1000:00:00
-#PBS -l nodes=1:ppn=1
+#PBS -l nodes=1:ppn=16
 
 # The followign ~30 lines define imporant files and directories to write to and get from.
 # It also extends the path for dependencies and imports a few variables from MC_Pref.py.
@@ -41,8 +41,8 @@ try: from MC_Pref import NumberOfProcesses
 except: from MC_Defaults import NumberOfProcesses
 try: from MC_Pref import SubLatticeGrid
 except: from MC_Defaults import SubLatticeGrid
-try: from MC_Pref import AdsorbateSize
-except: from MC_Defaults import AdsorbateSize
+try: from MC_Pref import AdmoleculeSize
+except: from MC_Defaults import AdmoleculeSize
 
 # This is to begin measuring the duration of the program (more Loggers will be created
 # in each process):
@@ -54,8 +54,8 @@ ProgramLogger.SuperProcess.start()
 ###
 # This is a script that uses SIESTA potential energy calculations to run a
 # Monte Carlo simulation.  It is designed to model any interaction between a single
-# adsorbate molecule and its adsorbant by freezing the adsorbate and adsorbant, but # Note: After I add optomization, change this descrption.
-# allowing the adsorbate to translate and rotate. The default system is a 273-atom
+# admolecule molecule and its adsorbant by freezing the admolecule and adsorbant, but # Note: After I add optomization, change this descrption.
+# allowing the admolecule to translate and rotate. The default system is a 273-atom
 # TNT-cellulose adorbtion process with effective 2-D periodic boundary conditions
 # (SIESTA requires all 3 directions, so one is set very large), but can be
 # adapted to model any single absorbate molecule adsorbtion process.  It is
@@ -83,7 +83,7 @@ ProgramLogger.SuperProcess.start()
 # Note: Make sure I test and verify this both in PBS, from command line, and maybe on Albacore. 
 # Note: update estimates for the number of liens in comments.
 # Note: Add an option whether to save archives or just delete them. 
-##      -Add automatic calculation of adsorbate and andsorbant by themselves and then graph the adsorbtion energy (save the output files)
+##      -Add automatic calculation of admolecule and andsorbant by themselves and then graph the adsorbtion energy (save the output files)
 ##      -Maybe create my own config class
 
 # In the folowing ~20 lines it moves any old output files to an "archive_output###",
@@ -115,10 +115,11 @@ shutil.copytree(CommandHome + '/SiestaFiles', CommandHome + '/output/SiestaFiles
 StartConfig = ConfigClass(CommandHome + '/SiestaFiles/InputGeom.xyz')
 StartConfig.QueryLattice(CommandHome + '/SiestaFiles/template.fdf') 
 StartConfig.SubLatticeGrid = SubLatticeGrid
-StartConfig.AdsorbateSize = AdsorbateSize
+StartConfig.AdmoleculeSize = AdmoleculeSize
 SIESTA(StartConfig,CommandHome,NumberOfSiestaCores,ProgramLogger)
 WriteLock = multiprocessing.Lock() # A lock for writing to all files.
 LogQ = multiprocessing.Queue() # A queue for each process to send their Loggers to when finished.
+
 
 # Then it writes the beginning of the poroperties ensemble file. #Note: I should time this writing process! 
 StartConfig.StartWrite(CommandHome, lock = WriteLock)
