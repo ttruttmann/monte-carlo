@@ -1,5 +1,4 @@
 #!/usr/bin/python
-
 # Directives for the job manager:
 #PBS -q default
 #PBS -o output/output.pbs
@@ -30,8 +29,10 @@ sys.path.append(CommandHome)
 
 # These are my own defined Classes that will be useful:
 from MC_Util import ConfigClass
+from MC_Util import attach # Used to initially place the admolecule onto the adsorbent
 from MC_Util import Logger # Used for logging performance and writing to time.log.
-from MC_Util import SIESTA # Used for calling SIESTA and retreiving energy.
+from MC_Util import SIESTA # Used for calling SIESTA and retreiving energy for the baseline.
+from MC_Util import AdEnergy # Used to calculate the binding energy. 
 from MC_Util import MC_Cycle # The "heart" of the MC routine.
 
 # These are setting variables defined by the user in MC_Pref.py:
@@ -43,6 +44,15 @@ try: from MC_Pref import SubLatticeGrid
 except: from MC_Defaults import SubLatticeGrid
 try: from MC_Pref import AdmoleculeSize
 except: from MC_Defaults import AdmoleculeSize
+try: from MC_Pref import CounterpoiseOn
+except: from MC_Defaults import CounterpoiseOn
+try: from MC_Pref import RightSide
+except: from MC_Pref import RightSide
+
+# Since counterpoise calculations are not supported yet, I have to raise an error: 
+if CounterpoiseOn:
+    sys.stderr.write('Sorry, counterpoise calulations are not supported!')
+    raise Exception
 
 # This is to begin measuring the duration of the program (more Loggers will be created
 # in each process):
@@ -61,34 +71,13 @@ ProgramLogger.SuperProcess.start()
 # adapted to model any single absorbate molecule adsorbtion process.  It is
 # furthermore designed to run parallel processes.  This program will write output
 # files to the folder that qsub or ./RunMC.py was called in.
-# -Tristan Truttmann (tristan.truttmann@gmail.com)
-# Note: Consider adding some data analysis somehow.
-# Note: Add umbrella sampling
-# Note: Fix portability problem with my propensemble file. 
-# Note: Make the sheppard function more robust
-# Note: Add some more output files that store more infmation that can be analyzed by python. 
-# Note: Read through Gopinath's code and adjust to his syntax. Also consider getting his newest edition.
-# Note: look at how you start processes with a specific amount of resources.
-# Note: check for the possibility of deadlocks.
-# Note: Review notes and make sure all DONT follow the ...  and Dear User convention 
-# Note: Think about making a defaults script for the backend.  Also think about hiding some of these backend scripts. 
-# Note: Consider changing the permissions on the archive files I write. 
-# Note: Think of other ways to decrase writing and reading overhead by skipping past N lines if there are N atoms etc.
+# -Tristan Truttmann (tristan.truttmann@gmail.com)  
 # Note: Some things that I may do: 
-# Note: I think I can remove Gopinath's routines from the code now.
 # Note: I need to spell check my comments
-# Idea: Create a fourier representation of the metdynamics bias to work with unitcells
-# Idea: Create a datastructure that stores connectivity and maximum dihedral, angle, and bond perterpations for more efficient MC sampling. 
-# Note: Make sure that for each thing in the ensemble file there is also one in all the ensemble files (no offset)
-# Note: Make sure I test and verify this both in PBS, from command line, and maybe on Albacore. 
-# Note: update estimates for the number of liens in comments.
-# Note: Add an option whether to save archives or just delete them. 
-##      -Add automatic calculation of admolecule and andsorbant by themselves and then graph the adsorbtion energy (save the output files)
-##      -Maybe create my own config class
+# Note: update estimates for the number of lines in comments.
 
 # In the folowing ~20 lines it moves any old output files to an "archive_output###",
 # folder, where ### is an index, to keep track of previous prefrences and their results.
-# Note: The program still isn't terminating properly on errors.
 # If there is an output folder with any files in it, we rename it ouput###, where ### 
 # is the lowest 3-digit number which hasn't been used yet.  This will overwrite the 
 # "output" directory if 1000 "archive_output###" directories already exist.  
@@ -105,21 +94,57 @@ if os.path.isdir(CommandHome + '/output'): # Checking of "output" directory exis
 else:
     os.mkdir(CommandHome + '/output') # If the "output" directory didn't exists, it makes it.
 
+# If we are going to do counterpoise calculations, we will record the basis-set-
+# superposition energies in a file names SuperError.csv:
+buffer = '# This file record basis-set-superposition errors (corrected - uncorrected)'
+ProgramLogger.ReadWrite.start()
+file = open(CommandHome + '/SuperError.csv','w')
+file.write(buffer)
+file.close()
+ProgramLogger.ReadWrite.stop()
+
 # Here I am copying the preferences file to the output so  that its easier to match
 # results with prefrences.
 shutil.copyfile(CommandHome + '/MC_Pref.py',CommandHome + '/output/MC_Pref[archive].py')
 shutil.copytree(CommandHome + '/SiestaFiles', CommandHome + '/output/SiestaFiles[archive]')
-#try: # Note: I think I should use try earlier to prevent import eros from preferences file
-    # This reads from InputGeom.xyz (in SiestaFiles directory) to get the input structure
-    # and calculates the energy: # Note: I think I can delete the file objects
-StartConfig = ConfigClass(CommandHome + '/SiestaFiles/InputGeom.xyz')
+# This reads from xyz file(s) (in SiestaFiles directory) to get the input structure
+# and calculates the energy:
+# There are two ways to designate the structure. We need to figure out which one first:
+StructureFile = os.path.isfile(CommandHome + '/SiestaFiles/InputGeom.xyz')
+AdsorbentFile = os.path.isfile(CommandHome + '/SiestaFiles/Adsorbent.xyz')
+AdmoleculeFile = os.path.isfile(CommandHome + '/SiestaFiles/Admolecule.xyz')
+# If the user supplis both types of files, then an error is raised:
+if StructureFile and AdsorbentFile and AdmoleculeFile:
+    message = 'You must supply either the adsorbent and admolecule in one file or seperate. '
+    message += 'You may not supply both.'
+    sys.stderr.wrie(message)
+    raise Exception
+# Here is the start-up if both are supplied in one structure. 
+if StructureFile:
+    StartConfig = ConfigClass(CommandHome + '/SiestaFiles/InputGeom.xyz')
+    if AdmoleculeSize == None:
+        message = 'If you supply the adsorbent and admolecule together,'
+        message += ' you must specify AdmoleculeSize.'
+        sys.stderr.write(message)
+        raise Exception
+    StartConfig.AdmoleculeSize = AdmoleculeSize
+# Here is the startup if the two are supplied in seperate xyz files.  
+elif AdsorbentFile and AdmoleculeFile:
+    adsorbent = ConfigClass(CommandHome + '/SiestaFiles/adsorbent.xyz')
+    admolecule = ConfigClass(CommandHome + '/SiestaFiles/admolecule.xyz')
+    try: StartConfig = attach(adsorbent,admolecule,RightSide)
+    except NameError: 
+        message = "You must have the statsmodels package in order to have the program"
+        message += " automatically attach the admolecule to the adsorbent"
+        sys.stderr.write(message)
+        raise
 StartConfig.QueryLattice(CommandHome + '/SiestaFiles/template.fdf') 
 StartConfig.SubLatticeGrid = SubLatticeGrid
-StartConfig.AdmoleculeSize = AdmoleculeSize
-SIESTA(StartConfig,CommandHome,NumberOfSiestaCores,ProgramLogger)
+baseline  = SIESTA(StartConfig.adsorbent(),CommandHome,NumberOfSiestaCores,ProgramLogger,ghost=None)
+baseline += SIESTA(StartConfig.admolecule(),CommandHome,NumberOfSiestaCores,ProgramLogger,ghost=None)
+StartConfig.E = AdEnergy(StartConfig,CommandHome,NumberOfSiestaCores,ProgramLogger,CounterpoiseOn,baseline,lock = multiprocessing.Lock())
 WriteLock = multiprocessing.Lock() # A lock for writing to all files.
 LogQ = multiprocessing.Queue() # A queue for each process to send their Loggers to when finished.
-
 
 # Then it writes the beginning of the poroperties ensemble file. #Note: I should time this writing process! 
 StartConfig.StartWrite(CommandHome, lock = WriteLock)
@@ -136,7 +161,7 @@ EnsembleSize = multiprocessing.Manager().Value('i',0)
 # The first loop starts the processes:
 proc = []
 for i in range(NumberOfProcesses):
-    proc.append(multiprocessing.Process(target=MC_Cycle, args = (StartConfig, EnsembleSize, CommandHome, ScratchPath, WriteLock, LogQ,)))
+    proc.append(multiprocessing.Process(target=MC_Cycle, args = (StartConfig, EnsembleSize, CommandHome, ScratchPath, WriteLock, LogQ,baseline,)))
     proc[i].start()
 
 # Then we stop timing this process since it will soon sleep:
@@ -144,8 +169,6 @@ ProgramLogger.process.stop()
 # This loop waits until each process sends it loggger infomation upon completion:
 for i in range(NumberOfProcesses):
     ProgramLogger += LogQ.get()
-
-#finally: # Note: Finad a way to impliment his finally without getting locked.  
 
 # Then we have to start timing this process again. 
 ProgramLogger.process.start()
@@ -163,4 +186,4 @@ ProgramLogger.ReadWrite.stop()
 # Then we end all processes and write the actual performance summary:
 ProgramLogger.process.stop()
 ProgramLogger.SuperProcess.stop()
-ProgramLogger.summary(CommandHome + '/output/time.log') # Note: I shold consider creating a logpath variable or something.  I should also update this function (have default variables.)
+ProgramLogger.summary(CommandHome + '/output/time.log')

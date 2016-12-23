@@ -5,16 +5,18 @@
 
 # The followign ~20 lines define imporant files and directories to write to and get from.
 # It also extends the path for dependencies:
-
 # These are python libraries that are needed:
 import copy
 import os
 import multiprocessing
 import numpy as np
 import shutil
+# If the user does not have statsmodels, then they must manually attach the adolecule
+# to the adsorbent in the file InputGeom.xyz:
+try: import statsmodels.api as sm
+except ImportError: pass
 import sys
 import time
-
 # These are paths that are needed:
 # <CommandHome> is the path to where qsub or ./RunMC.py was called:
 # If we are running in PBS, use the PBS working directory environment variable for <CommandHome>:
@@ -30,7 +32,6 @@ sys.path.append(CommandHome)
 def bias(config, history, MetaHeight, MetaWidths):
 # Funciton that generates a bias based on user prefrences and sampling history. 
 #====================================================================================
-# Note: when this is implimented, make sure that the bias is calculated before the history is changed.
 # Note: Some day I might make the Gaussians spill over to the next unit cell, or the next rotational 
 # element on a sphere.  I might also make the guassians have a equal span in linear distance 
 # on the surface of a sphere. 
@@ -40,9 +41,6 @@ def bias(config, history, MetaHeight, MetaWidths):
         return BiasEnergy
     except:
         raise
-# Note: function under contruction: 
-    
-
 
 #====================================================================================
 class PTableClass:
@@ -91,6 +89,8 @@ class FileFormatError(Exception): pass
 class SizeInconsistency(Exception): pass
 # Raised when there is a linear angle that is interfering with angle calculations: 
 class LinearAngleError(Exception): pass
+# Raised when SIESTA returns an error:
+class SiestaError(Exception): pass
     
 #====================================================================================
 def angle(v1,v2,PosN = None):
@@ -136,10 +136,6 @@ class ConfigClass:
 #   coord:              A nx3 numpy array of loats storing the x, y, and z positions of each atom.
 #
 #   E:                  Storing the energy of the configuration in eV. Default 0.0
-#
-#   bias:               A float storing the selectino bias that was used to acheive the
-#                       configuration in the MC. Default 1.0. Higher values mean it 
-#                       should be weighted lower for ensemble calculation. 
 #
 #   AdmoleculeSize:      An integer storing the number of atoms in the admolecule.
 #
@@ -197,7 +193,6 @@ class ConfigClass:
 #                       to the global xyz coordinate system.  See the code for
 #                       how the angles are determined.  
 #
-# Note: I need to later make a function to get the lattice infomraiton from the file.
 #====================================================================================
     def __init__(self,father=None):
         # If there is no argument, an empty default ConfigClass is created:
@@ -205,19 +200,17 @@ class ConfigClass:
             self.anum = np.zeros(0 , dtype = int)
             self.coord = np.zeros((0,3), dtype=float)
             self.E = 0.0
-            self.bias = 1.0
             self.AdmoleculeSize = None
             self.LatticeMatrix = None
-            self.SubLatticeGrid = None # Note: Make sure I'm using these things!
+            self.SubLatticeGrid = None
         # If the argument is a string, then it attempts to read it as an xyz file:
         elif type(father) is str:
             try:
                 # First some defaults are set that are not available from the xyz file:
                 self.E = 0.0
-                self.bias = 1.0
                 self.AdmoleculeSize = None
                 self.LatticeMatrix = None
-                self.SubLatticeGrid = None # Note: Change shepperd to use these!
+                self.SubLatticeGrid = None
                 # It opens the file and reads the number of atoms from line 1:
                 file =  open(father,'r')
                 natom = int(file.readline())
@@ -261,7 +254,6 @@ class ConfigClass:
                 self.coord = CopyConfig.coord
                 self.E = CopyConfig.E
                 self.AdmoleculeSize = CopyConfig.AdmoleculeSize
-                self.bias = CopyConfig.bias
                 self.LatticeMatrix = CopyConfig.LatticeMatrix
                 self.SubLatticeGrid = CopyConfig.SubLatticeGrid
             # Then it handles the error by writing to standard error and raising again:
@@ -352,7 +344,6 @@ class ConfigClass:
         NewConfig.anum = TotalSystem.anum[: len(TotalSystem.anum)-TotalSystem.AdmoleculeSize]
         NewConfig.coord = TotalSystem.coord[: len(TotalSystem.coord)-TotalSystem.AdmoleculeSize]
         NewConfig.E = 0.0
-        NewConfig.bias = TotalSystem.bias
         NewConfig.AdmoleculeSize = TotalSystem.AdmoleculeSize
         NewConfig.LatticeMatrix = None
         NewConfig.SubLatticeGrid = None
@@ -366,7 +357,6 @@ class ConfigClass:
         NewConfig.anum = TotalSystem.anum[len(TotalSystem.anum)-TotalSystem.AdmoleculeSize :]
         NewConfig.coord = TotalSystem.coord[len(TotalSystem.coord)-TotalSystem.AdmoleculeSize:]
         NewConfig.E = 0.0
-        NewConfig.bias = TotalSystem.bias
         NewConfig.AdmoleculeSize = TotalSystem.AdmoleculeSize
         NewConfig.LatticeMatrix = None
         NewConfig.SubLatticeGrid = None
@@ -414,7 +404,6 @@ class ConfigClass:
         buffer = 'import numpy as np\n'
         # Then it initializes an empty numpy array:
         buffer += 'energy = np.array((),dtype=float)\n'
-        buffer += 'bias = np.array((),dtype=float)\n'
         # Then it writes the buffer to the file:
         lock.acquire()
         file = open(FileName,'w')
@@ -431,7 +420,6 @@ class ConfigClass:
         lock.acquire()
         file = open(FileName,'a')
         file.write('energy = np.append(energy,' + str(self.E) + ')\n')
-        file.write('bias = np.append(bias,' + str(self.bias) + ')\n')
         file.close()
         lock.release()
         return
@@ -461,10 +449,9 @@ class ConfigClass:
         self.verify()
         # Then it writes important information to buffer:
         buffer = '\nTempConfig = ConfigClass()\n'
-        buffer += 'TempConfig.anum = ' + repr(self.anum) + '\n' #Note: Make sure this works!
+        buffer += 'TempConfig.anum = ' + repr(self.anum) + '\n'
         buffer += 'TempConfig.coord = ' + repr(self.coord) + '\n'
         buffer += 'TempConfig.E = ' + repr(self.E) + '\n'
-        buffer += 'TempConfig.bias = ' + repr(self.bias) + '\n'
         buffer += 'TempConfig.AdmoleculeSize = ' + repr(self.AdmoleculeSize) + '\n'
         buffer += 'TempConfig.LatticeMatrix = ' + repr(self.LatticeMatrix) + '\n'
         buffer += 'TempConfig.SubLatticeGrid = ' + repr(self.SubLatticeGrid) + '\n'
@@ -473,6 +460,34 @@ class ConfigClass:
         lock.acquire()
         file = open(FileName,'a')
         file.write(buffer)
+        file.close()
+        lock.release()
+        return
+        
+    # Generates a new file to record the floppy coordinates to:
+    def StartWriteFloppy(self, FileName, lock = multiprocessing.Lock()):
+        # First it checks for size inconsistencies:
+        self.verify()
+        # Then it imports numpy:
+        buffer = 'import numpy as np\n'
+        # Then it initializes an empty numpy array:
+        buffer += 'FloppyCoord = np.zeros((0,6))\n'
+        # Then it writes the buffer to the file:
+        lock.acquire()
+        file = open(FileName,'w')
+        file.write(buffer)
+        file.close()
+        lock.release()
+        return
+        
+    # Appends Floppy coordinate data to a python-readable file:    
+    def WriteFloppy(self,FileName,lock = multiprocessing.Lock()):
+        # First it checks for size inconsistencies:
+        self.verify()
+        # Then it directly writes the energy to the file:
+        lock.acquire()
+        file = open(FileName,'a')
+        file.write('FloppyCoord = np.append(FloppyCoord,' + 'np.' + repr(self.FloppyCoord()) + ')\n')
         file.close()
         lock.release()
         return
@@ -486,6 +501,7 @@ class ConfigClass:
             # Then it calls the two functions:
             self.StartWriteEnergy(CommandHome + '/output/EnergyEnsemble.py',lock = lock)
             self.StartWriteConfig(CommandHome + '/output/ConfigEnsemble.py',lock = lock)
+            self.StartWriteFloppy(CommandHome + '/output/FloppyEnsemble.py',lock = lock)
             return
         except AttributeError:
              sys.stdout.write('The first argument of ConfigClass().StartWrite() must be a string\n')
@@ -501,6 +517,7 @@ class ConfigClass:
             self.WriteGeom(CommandHome + '/output/GeomEnsemble.xyz', lock = lock)
             self.WriteEnergy(CommandHome + '/output/EnergyEnsemble.py', lock = lock)
             self.WriteConfig(CommandHome + '/output/ConfigEnsemble.py', lock = lock)
+            self.WriteFloppy(CommandHome + '/output/FloppyEnsemble.py', lock = lock)
             return
         except AttributeError:
              sys.stdout.write('The first argument of ConfigClass().StartWrite() must be a string\n')
@@ -535,8 +552,6 @@ class ConfigClass:
                 vecN = np.cross(LocalZ, np.array((0,0,1)) )
             # However if z' points in the Z direction, then vecN will be indentically 
             # zero. This is not acceptable.  To combat this, we default vecN to the x' direction:
-            # Note: These choice may provide dangerous sampling bias. A future project will be to 
-            # analyze this in detail.  
             else:
                 vecN = LocalX
             # alpha is the angle between N and X.  I assign this to the 4th element of FloppyVec:
@@ -579,7 +594,7 @@ def RotateAxisAngle(conf, unit_axis, DegAngle):
     return newconf
 
 #====================================================================================
-def MC_Cycle(StartConfig, EnsembleSize, CommandHome, ScratchPath, WriteLock, LogQ):
+def MC_Cycle(StartConfig, EnsembleSize, CommandHome, ScratchPath, WriteLock, LogQ, baseline):
 # The "backbone" of the MC algorithm. Will be initated as many parallel processes 
 # which will each create new ensemble images and add them to a shared ensemble record.
 # The cycles will terminate when EnsembleTarget is reached.
@@ -624,7 +639,11 @@ def MC_Cycle(StartConfig, EnsembleSize, CommandHome, ScratchPath, WriteLock, Log
     try:
         from MC_Pref import MetaHeight
     except:
-        from MC_Defaults import MetaHeight   
+        from MC_Defaults import MetaHeight
+    try:
+        from MC_Pref import CounterpoiseOn
+    except:
+        from MC_Defaults import CounterpoiseOn
 
     CycleLogger = Logger()
     CycleLogger.process.start()
@@ -643,8 +662,6 @@ def MC_Cycle(StartConfig, EnsembleSize, CommandHome, ScratchPath, WriteLock, Log
     T_index = [0,0]
     while True:
         # First it handles the simulated anealing sequence:\
-        # Note: Consider making this an iterable function.
-        # Note: if metadynamics goes really well, just get rid of thermal anealing. 
         T = T_Sequence[T_index[0]][1]
         T_index[1] += 1
         if T_index[1] == T_Sequence[T_index[0]][0]:
@@ -652,22 +669,18 @@ def MC_Cycle(StartConfig, EnsembleSize, CommandHome, ScratchPath, WriteLock, Log
             T_index[0] += 1
             if T_index[0] == len(T_Sequence):
                 T_index[0] = 0
-        CandConfig = move(OldConfig,TransLimit,RhoLimitDeg) # Note: Update this move function for new configClass.
+        CandConfig = move(OldConfig,TransLimit,RhoLimitDeg)
         CandConfig = shepherd(CandConfig) if ShepherdOn else CandConfig
-        SIESTA(CandConfig,CommandHome,NumberOfSiestaCores,CycleLogger)
-        # Note: remember to change oldbias to new bias appropriately
+        CandConfig.E = AdEnergy(CandConfig,CommandHome,NumberOfSiestaCores,CycleLogger,CounterpoiseOn,baseline,lock = multiprocessing.Lock())
         if MetaDynamicsOn:
             CandBiasE = bias(CandConfig, history, MetaHeight, MetaWidths)
             CandBiasFactor = np.exp(-(CandBiasE-OldBiasE)/(k*T))
         else:
             CandBiasFactor = 1
-        # Note: Be very careful that the bias information gets recorded differently depending on who wins.  
         rand = np.random.random()
         prob = CandBiasFactor * np.exp(-(CandConfig.E-OldConfig.E)/(k*T))
         if rand <= prob:
-            CandConfig.bias = CandBiasFactor
             OldConfig = ConfigClass(CandConfig) # This is a way to assign without side-effects
-            # Note: this is a big mess.  Fix all this some time.
             CycleLogger.hit()
             if Optimize:
                 TransLimit = TransLimit * 1.05
@@ -678,15 +691,12 @@ def MC_Cycle(StartConfig, EnsembleSize, CommandHome, ScratchPath, WriteLock, Log
                 break
         else:
             CycleLogger.miss()
-            OldConfig.bias = 1 / CandBiasFactor
-            print "The TransLimit = " + str(TransLimit) # Note: Delete these. For debuggin purposes.
-            print "The RhoLimitDeg = " + str(RhoLimitDeg)
             if Optimize:
                 TransLimit = TransLimit * 0.95
                 RhoLimitDeg = RhoLimitDeg * 0.95
         CycleLogger.ReadWrite.start()
-        CandConfig.Write(CommandHome, lock = WriteLock)
-        CycleLogger.ReadWrite.stop() # Note: Consider making one big lock to preventthreading of writing processes.
+        OldConfig.Write(CommandHome, lock = WriteLock)
+        CycleLogger.ReadWrite.stop()
         EnsembleSize.value = EnsembleSize.value + 1
         # Recording the position for future metadynamics biasing:            
         history = np.concatenate((history,OldConfig.FloppyCoord()),axis=0)
@@ -695,18 +705,23 @@ def MC_Cycle(StartConfig, EnsembleSize, CommandHome, ScratchPath, WriteLock, Log
         OldBiasE = bias(OldConfig, history, MetaHeight, MetaWidths)
         CycleLogger.ReadWrite.start()
         CycleLogger.summary(CommandHome + '/time.log',WriteLock)
-        CycleLogger.ReadWrite.stop() # Note: I'm not yet sure if I should do this outside or inside the summary funciton.
-    # CycleLogger.process.stop() Note: I think I have to delete this and add the queue transfer after this.
+        CycleLogger.ReadWrite.stop()
 
 #====================================================================================
-def SIESTA(config,CommandHome,NumberOfSiestaCores,Logger):
+def SIESTA(config,CommandHome,NumberOfSiestaCores,Logger,ghost=None):
 # This function uses the file template.fdf in the SiestaFiles directory as a template
 # to run a SIESTA job to compute the potential energy.  It appends the geometric
 # coordinates to the end of the file in the form "X\tY\tZ\tN" where N is the species
 # number (which is extracted from template.fdf.  If you want to change the energy
 # calculation parameters, edit the template.fdf file.
 #====================================================================================
-    # First the working directory <WorkDir> is created, and the pseudopotentials
+    # First I ensure that <ghost> is defined properly:
+    try:
+        if (ghost != None) and (ghost != 'adsorbent') and (ghost != 'admolecule'):
+            raise ValueError
+    except ValueError:
+        sys.stdout.write("ghost must be set to None, 'adsorbent', or 'admolecule'.")
+    # Then the working directory <WorkDir> is created, and the pseudopotentials
     # <*.psf> and imput file <template.fdf> are coppied to it:
     WorkDir = '/tmp/' + os.getlogin()
     if not os.path.isdir(WorkDir):
@@ -720,12 +735,11 @@ def SIESTA(config,CommandHome,NumberOfSiestaCores,Logger):
     Logger.ReadWrite.stop()
     # Then we have to define a species dict using the <template.fdf> file.  This will
     # convert between atomic symbols and Species Numbers that SIESTA uses:
-    # Note:  This might be too costly to do this during every iteration...  I should move it to min script or somehting.
     Logger.ReadWrite.start()
     with open(WorkDir + '/template.fdf','r') as file:
         SpeciesNumbers = dict()
         NoteTaking = False
-        for line in file:  # Note: Consider doing this somewhere else to save on reading time.
+        for line in file:
             if '%block ChemicalSpeciesLabel' in line:
                 NoteTaking = True
                 continue
@@ -733,18 +747,37 @@ def SIESTA(config,CommandHome,NumberOfSiestaCores,Logger):
                 break
             if NoteTaking == True:
                 Note = line.replace('\n','').replace('\t','').replace(',','').split(' ')
-                while '' in Note: # Note: Do I really need to have a while loop Here?
+                while '' in Note:
                     Note.remove('')
                 SpeciesNumbers[Note[1]] = Note[0]
         file.close()
     Logger.ReadWrite.stop()
+    # Then we correct the NumberOfAtoms field in the .fdf file: 
+    # Explain in user manual that this line must be blank
+    os.system("sed -i -e 's/NumberOfAtoms/NumberOfAtoms          " + str(len(config.anum)) + "/g' " + WorkDir + "/template.fdf")
     # Then we define an output buffer <OutBuffer> in memory to store the string that
     # that we will write to the file:
     OutBuffer = '%block AtomicCoordinatesAndAtomicSpecies\n'
-    for i in range(len(config.anum)):
-        for j in range(3): # Note: This must be changed for new ConfigClass!
-            OutBuffer += str(config.coord[i][j]) + '\t'
-        OutBuffer += SpeciesNumbers[str(config.anum[i])]
+    # We split the buffer into the the adsorbent and the admolecule (two loops):
+    # Loop for adsorbent:
+    for i in range(len(config.adsorbent().anum)):
+        for j in range(3):
+            OutBuffer += str(config.adsorbent().coord[i][j]) + '\t'
+        # If we are ghosting these the adsorbent, we must just write a zero
+        if ghost == 'adsorbent':
+            OutBuffer += SpeciesNumbers[str(-config.adsorbent().anum[i])]
+        else:
+            OutBuffer += SpeciesNumbers[str(config.adsorbent().anum[i])]
+        OutBuffer += '\n'
+    # Loop for admolecule:
+    for i in range(len(config.admolecule().anum)):
+        for j in range(3):
+            OutBuffer += str(config.admolecule().coord[i][j]) + '\t'
+        # If we are ghosting the admolecule, we include the ghost atom:
+        if ghost == 'admolecule':
+            OutBuffer += SpeciesNumbers[str(-config.admolecule().anum[i])]
+        else:
+            OutBuffer += SpeciesNumbers[str(config.admolecule().anum[i])]
         OutBuffer += '\n'
     OutBuffer = OutBuffer + '%endblock AtomicCoordinatesAndAtomicSpecies'
     # Then we write the geometry block to the file:
@@ -756,14 +789,18 @@ def SIESTA(config,CommandHome,NumberOfSiestaCores,Logger):
     # Then it moves into the <WorkDir> directory, runs the SIESTA job, then moves up:
     os.chdir(WorkDir)
     Logger.siesta.start()
-    os.system('mpirun -np ' + str(NumberOfSiestaCores) + ' siesta < template.fdf | tee template.out')
+    status = os.system('mpirun -np ' + str(NumberOfSiestaCores) + ' siesta < template.fdf | tee template.out')
     Logger.siesta.stop()
     os.chdir('..')
+    # Then we need to raise an error if Siesta has an error: 
+    if status != 0:
+        sys.stderr.write('SIESTA returned an error.')
+        raise SiestaError
     #Then we extract the energy from the output file:
     Energy = 0.00
     # Dear User: This only works for harris functional.  If you edit <template.fdf>,
     # please replace 'siesta: Eharris(eV) =' appropriately.
-    Logger.ReadWrite.start() # Note: Make some lookup routine to generalize energy mining.
+    Logger.ReadWrite.start()
     with open(WorkDir + '/template.out','r') as file:
         for line in file:
             if 'siesta: Eharris(eV) =' in line:
@@ -775,7 +812,142 @@ def SIESTA(config,CommandHome,NumberOfSiestaCores,Logger):
     # Finally it deletes the working directory <WorkDir> and writes the Enegy in eV
     # to <config.E>:
     shutil.rmtree(WorkDir)
-    config.E = Energy
+    return Energy
+
+
+#====================================================================================
+def AdEnergy(config,CommandHome,NumberOfSiestaCores,Logger,CounterpoiseOn,baseline,lock = multiprocessing.Lock()):
+# This function takes the configuration and the 'baseline' energy of the species seperatre
+# and returns the adsorbtion energy.  If <CounterpoiseOn = True>, then a Counterpoise 
+# calcualtion is done automatically and the basis set superposition energy is recorded
+# in the a file named "output/SuperpositionError.csv". 
+#====================================================================================
+# Note: Consider jsut getting rid all the passed arguments and picking up the 
+# global variable names.  But you would probably have to do this for the SIESTA function too.
+    # If counterpoise is turned off, then we simply subtract the system energy frome the baseline:
+    if CounterpoiseOn == False:
+        return SIESTA(config,CommandHome,NumberOfSiestaCores,Logger,ghost=None) - baseline
+    # If counterpoise is turned on, then the calculation is a little more complicated:
+    if CounterpoiseOn:
+        GhostAdsorbent  = SIESTA(config,CommandHome,NumberOfSiestaCores,Logger,ghost='adsorbent')
+        GhostAdmolecule = SIESTA(config,CommandHome,NumberOfSiestaCores,Logger, ghost='admolecule')
+        NoGhost         = SIESTA(config,CommandHome,NumberOfSiestaCores,Logger, ghost=None)
+        AdEnergy = NoGhost - (GhostAdsorbent + GhostAdmolecule)
+        # We also keep track of the basis-set-superposition error for recording purposes:
+        SuperError = baseline - (GhostAdsorbent + GhostAdmolecule)
+        buffer = '\n' + str(SuperError)
+        Logger.ReadWrite.start()
+        lock.acquire()
+        file = open(CommandHome + '/output/SuperError.csv','a')
+        file.write(buffer)
+        file.close()
+        lock.release()
+        Logger.ReadWrite.stop()
+        return AdEnergy
+
+#====================================================================================
+def attach(adsorbent,admolecule,RightSide=None):
+# Attached the admolecule to the adsorbent. Attaches to side that <norm> points in if
+# supplied.  This will only work for surfaces that are reletively thin and flat. 
+# <RightSide> should be 3-element numpy array
+#====================================================================================
+    # First make coppies of the arguments to prevent side effects: 
+    admolecule = copy.deepcopy(admolecule)
+    adsorbent = copy.deepcopy(adsorbent)    
+    # Then perform 3 linear regressions on the adsorbent, and take the one with the 
+    # lowest error. This represents it as a plane: 
+    x = adsorbent.coord[:,0]
+    y = adsorbent.coord[:,1]
+    z = adsorbent.coord[:,2]
+    Norms = np.zeros((3,3))
+    RMSError = np.zeros(3)
+    #Regression 1:
+    X = np.column_stack((y,z))
+    X = sm.add_constant(X) # Design matrix
+    Z = x # Dependent variable
+    results = sm.OLS(Z,X).fit()
+    b = results.params[0]
+    m1 = results.params[1]
+    m2 = results.params[2]
+    Norms[0] = np.array((1/b,-m1/b,-m2/b))
+    RMSError[0] = np.linalg.norm(results.bse)
+    #Regression 2:
+    X = np.column_stack((z,x))
+    X = sm.add_constant(X) # Design matrix
+    Z = y # Dependent variable
+    results = sm.OLS(Z,X).fit()
+    b = results.params[0]
+    m1 = results.params[1]
+    m2 = results.params[2]
+    Norms[1] = np.array((-m2/b,1/b,-m1/b))
+    RMSError[1] = np.linalg.norm(results.bse)
+    #Regression 1:
+    X = np.column_stack((x,y))
+    X = sm.add_constant(X) # Design matrix
+    Z = z # Dependent variable
+    results = sm.OLS(Z,X).fit()
+    b = results.params[0]
+    m1 = results.params[1]
+    m2 = results.params[2]
+    Norms[2] = np.array((-m1/b,-m2/b,1/b))
+    RMSError[2] = np.linalg.norm(results.bse)
+    # Then we just choose the norm with the lease RMS error and we normalize:
+    Norm = Norms[np.argmin(RMSError)]
+    Norm = Norm / np.linalg.norm(Norm)
+    # If the user specified a side, we will orient the Norm in that direction.
+    if RightSide != None:
+        Norm = np.dot(Norm,RightSide) / np.linalg.norm(RightSide)
+    # Then we project all adsorbent atoms' positions of the adsorbent onto the norm:
+    AdsorbentDist = np.dot(adsorbent.coord,Norm)
+    AdsorbentDist = AdsorbentDist - np.average(AdsorbentDist)
+    # We do the same with the admolecule:
+    AdmoleculeDist = np.dot(admolecule.coord,Norm)
+    AdmoleculeDist= AdmoleculeDist - np.average(AdmoleculeDist)
+    # Then we use the max of the AdsorbentDist and the min of the AdmoleculeDist
+    # and add 1.77 to as the distance between the two centroids at the beginning of the 
+    # Lennard-Jones optimization (1.77 comes from Zimmerman et all. [1])
+    InterDist = np.max(AdsorbentDist) - np.min(AdmoleculeDist) + 1.77
+    # Then we have to define an energy function based on a 6-12 potential: 
+    def QuickEnergy(InterDist):
+        R_eq = 1.77
+        TransVec = (adsorbent.centroid() + Norm * InterDist) - admolecule.centroid()
+        NewAdMoleculeCoords = admolecule.coord + TransVec
+        InterDistances = np.zeros(0)
+        # Note: Vectorize this in the future if possible.
+        for iAtom in adsorbent.coord:
+            for jAtom in NewAdMoleculeCoords:
+                InterDistances = np.append(InterDistances,np.linalg.norm(iAtom - jAtom))
+        Energies = (R_eq/InterDistances)**12 - 2*(R_eq/InterDistances)**6
+        return np.sum(Energies)
+    # Then I minimize the energy function to find best distance using binarry search:
+    # We set up "inner" and "outer" walls
+    # Note: This may not work with strange adrorbent geometries:
+    inner = 0.0
+    outer = InterDist
+    OuterEnergy = QuickEnergy(outer)
+    # Then I move the walls in closer to the minimum in 15 steps:
+    for i in range(15):
+        # We see what the energy half way between the walls is:
+        MiddleEnergy = QuickEnergy(np.average((inner,outer)))
+        # If the energy is higher, we move the inner wall to the middle:
+        if MiddleEnergy >= OuterEnergy:
+            inner = np.average((inner,outer))
+            continue
+        elif MiddleEnergy < OuterEnergy:
+        # If the energy is lower, we move the outer wall there: 
+            outer = np.average((inner,outer))
+            OuterEnergy = MiddleEnergy
+            continue
+    # Then we use the final outer wall as the distance:
+    InterDist = outer
+    # Then I change the position of the admolecule:
+    TransVec = (adsorbent.centroid() + Norm * InterDist) - admolecule.centroid()
+    admolecule.coord = admolecule.coord + TransVec
+    # Then I fuse the two together and return the new object. 
+    adsorbent.coord = np.append(adsorbent.coord,admolecule.coord,axis=0)
+    adsorbent.anum = np.append(adsorbent.anum,admolecule.anum)
+    adsorbent.AdmoleculeSize = len(admolecule.anum)
+    return ConfigClass(adsorbent)
 
 #====================================================================================
 def move(config,TransLimit,RhoLimitDeg):
@@ -986,3 +1158,7 @@ class Logger:
         sum.SuperProcess = self.SuperProcess + other.SuperProcess
         return sum
         # Note: Add some error handeling here.
+
+# References: 
+# [1] Zimmerman, Paul M., Martin Head-Gordon, and Alexis T. Bell. "Selection and validation 
+# of charge and Lennard-Jones parameters for QM/MM simulations of hydrocarbon interactions # with zeolites." Journal of chemical theory and computation 7.6 (2011): 1695-1703.

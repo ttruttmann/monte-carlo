@@ -3,12 +3,12 @@ SystemLabel			template
 # This is a template file used in the MC code by Tristan Truttmann.
 # This particular file uses a Harris functional, minimal basis set and a soft confinement potential.
 # It is made to be used with *.psf files downloaded form the internet.
-NumberOfAtoms			273
+NumberOfAtoms			# This field must be left blank for program.
 NumberOfSpecies			4
 # If you change any of the the following 3 lines,
 # please also change line 69 in MC_Util.py accordingly. Note: update the line number when you are done.
 XC.functional			LDA
-XC.authors				PZ
+XC.authors			PZ
 Harris_functional		.true.
 PAO.BasisType			nonodes
 PAO.BasisSize			SZ

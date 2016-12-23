@@ -12,6 +12,12 @@ import numpy as np
 #####################################################################################
 SubLatticeGrid = np.array((1,1,1))
 
+# Enter the number of atoms of the admolecule.
+AdmoleculeSize = None
+
+# Enter a 3-element numpy array that points in the general direction of side of the 
+# adsorbent that you want to attach to.  If you don't care, set it to None. 
+RightSide = None
 #####################################################################################
 # Simulation parameters:
 #####################################################################################
@@ -27,6 +33,11 @@ EnsembleTarget = 100
 # Set to True if you want to dynamically optimize <TransLimit> and <RhoLimitDeg> or 
 # set it to false for a fixed TransLimit and RhoLimitDeg.  True is recomended.
 Optimize = False
+
+# Set to True is you wish to perform a counterpoise calculation every time you perform
+# an energyf caulculation.  Expected to increase load by 3x but recommended that you keep
+# this option on: Sorry, counterpoise calculations are not supported yet. 
+CounterpoiseOn = False
 
 # Set <TransLimit> to initial maximum translational movement in Angstroms and 
 # <RhoLimitDeg> to initial maximum rotation in degres. If Optimize = True, both values
@@ -46,7 +57,9 @@ ShepherdOn = True
 # are for x,y, and z and are in Angstrom.  The last 3 elements are for alpha, beta, and 
 # gamma proper euler angles and are in degrees.
 # <MetaHeights> will specify the hight of the curves in eV.  For course-grained 
-# sampling, use larger hights and widths.  For fine-grained sampling, use smaller values.  
+# sampling, use larger hights and widths.  For fine-grained sampling, use smaller values. 
+# If you wish to turn off local elevation for a certain dimension, set the width to 
+# float('inf'). 
 # Note: Think about how to specify height or area and then copy this to Pref file. 
 # Also think about How big these default values should be.  
 MetaDynamicsOn = True

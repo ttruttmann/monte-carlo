@@ -14,7 +14,7 @@ import numpy as np
 # Edit these variables to your specific system: 
 #####################################################################################
 # Enter the number of atoms of the admolecule.
-AdmoleculeSize = 21  
+AdmoleculeSize = 21
 
 # Please change these fence vectors to the smallest repeating unit in
 # your adsorbant (not necessarily the unit cells entered in SIESTA). Please enter
@@ -22,6 +22,10 @@ AdmoleculeSize = 21
 # little admolecule, then disable this function by setting <ShepherdOn> to False. And 
 # python won't even look for these variables.
 SubLatticeGrid = np.array((2,3,1))
+
+# Enter a 3-element numpy array that points in the general direction of side of the 
+# adsorbent that you want to attach to.  If you don't care, set it to None. 
+RightSide = None
 #####################################################################################
 # Edit these to modify simulation parameters for your desired outcome:
 #####################################################################################
@@ -33,7 +37,7 @@ SubLatticeGrid = np.array((2,3,1))
 T_Sequence = [[1,298]]
 
 # Dear User: Enter desired number of ensemble images here:
-EnsembleTarget = 10000
+EnsembleTarget = 5
 
 # Set to True if you want to dynamically optimize <TransLimit> and <RhoLimitDeg> or 
 # set it to false for a fixed TransLimit and RhoLimitDeg.  True is recomended.
@@ -52,15 +56,22 @@ RhoLimitDeg = 30
 # might walk over to the adjacent unit cell (which might make data harder to analyze).
 ShepherdOn = True
 
+# Set to True is you wish to perform a counterpoise calculation every time you perform
+# an energyf caulculation.  Expected to increase load by 3x but recommended that you keep
+# this option on: Sorry, counterpoise calculations are not supported yet. 
+CounterpoiseOn = False
+
 # <MetaDynamicsOn> will turn the MetaDynamics feature on or off. <MetaWidths> will specify
 # the standard deviation of the Gaussian curves in Angstrom; the first three elements 
 # are for x,y, and z and are in Angstrom.  The last 3 elements are for alpha, beta, and 
 # gamma proper euler angles and are in degrees.
 # <MetaHeights> will specify the hight of the curves in eV.  For course-grained 
-# sampling, use larger hights and widths.  For fine-grained sampling, use smaller values.  
+# sampling, use larger hights and widths.  For fine-grained sampling, use smaller values.
+# If you wish to turn off local elevation for a certain dimension, set the width to 
+# float('inf').   
 # Note: Think about how to specify height or area and then copy this to Pref file. 
 # Also think about How big these default values should be.  
-MetaDynamicsOn = True
+MetaDynamicsOn = False
 MetaWidths = np.array((0.3,0.3,0.3,90,90,90))
 MetaHeight = 0.05
 
