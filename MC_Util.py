@@ -2,6 +2,7 @@
 # Utilities used in RunMC.py for its Monte Carlo algorithm.
 # -Tristan Truttmann (tristan.truttmann@gmail.com)
 ###
+# Note: Possible future improvement is to record density matrices for faster convergence. 
 
 # The followign ~20 lines define imporant files and directories to write to and get from.
 # It also extends the path for dependencies:
@@ -500,7 +501,8 @@ class ConfigClass:
                 CommandHome += '/'
             # Then it calls the two functions:
             self.StartWriteEnergy(CommandHome + '/output/EnergyEnsemble.py',lock = lock)
-            self.StartWriteConfig(CommandHome + '/output/ConfigEnsemble.py',lock = lock)
+            # I have decided this is only needed for debugging purposes:
+            #self.StartWriteConfig(CommandHome + '/output/ConfigEnsemble.py',lock = lock)
             self.StartWriteFloppy(CommandHome + '/output/FloppyEnsemble.py',lock = lock)
             return
         except AttributeError:
@@ -516,7 +518,8 @@ class ConfigClass:
             # Then it calls the three functions and returns:
             self.WriteGeom(CommandHome + '/output/GeomEnsemble.xyz', lock = lock)
             self.WriteEnergy(CommandHome + '/output/EnergyEnsemble.py', lock = lock)
-            self.WriteConfig(CommandHome + '/output/ConfigEnsemble.py', lock = lock)
+            # I have decided WriteConfig is only needed for debugging pursposes:
+            #self.WriteConfig(CommandHome + '/output/ConfigEnsemble.py', lock = lock)
             self.WriteFloppy(CommandHome + '/output/FloppyEnsemble.py', lock = lock)
             return
         except AttributeError:
@@ -692,8 +695,8 @@ def MC_Cycle(StartConfig, EnsembleSize, CommandHome, ScratchPath, WriteLock, Log
         else:
             CycleLogger.miss()
             if Optimize:
-                TransLimit = TransLimit * 0.95
-                RhoLimitDeg = RhoLimitDeg * 0.95
+                TransLimit = TransLimit / 1.05
+                RhoLimitDeg = RhoLimitDeg / 1.05
         CycleLogger.ReadWrite.start()
         OldConfig.Write(CommandHome, lock = WriteLock)
         CycleLogger.ReadWrite.stop()
@@ -704,7 +707,7 @@ def MC_Cycle(StartConfig, EnsembleSize, CommandHome, ScratchPath, WriteLock, Log
         # geometry and the new history. 
         OldBiasE = bias(OldConfig, history, MetaHeight, MetaWidths)
         CycleLogger.ReadWrite.start()
-        CycleLogger.summary(CommandHome + '/time.log',WriteLock)
+        CycleLogger.summary(CommandHome + '/output/time.log',WriteLock)
         CycleLogger.ReadWrite.stop()
 
 #====================================================================================
@@ -723,11 +726,12 @@ def SIESTA(config,CommandHome,NumberOfSiestaCores,Logger,ghost=None):
         sys.stdout.write("ghost must be set to None, 'adsorbent', or 'admolecule'.")
     # Then the working directory <WorkDir> is created, and the pseudopotentials
     # <*.psf> and imput file <template.fdf> are coppied to it:
-    WorkDir = '/tmp/' + os.getlogin()
-    if not os.path.isdir(WorkDir):
+    # Note: In future version I might want to clean out these direcotries if they exist:
+    WorkDir = '/tmp/' + os.getlogin() # It first creates the subdirectory named with the username.
+    if not os.path.isdir(WorkDir): # It has to check if the directory already exists.
         os.mkdir(WorkDir)
-    WorkDir = WorkDir + '/proc' + str(multiprocessing.current_process().pid)
-    if not os.path.isdir(WorkDir):
+    WorkDir = WorkDir + '/proc' + str(multiprocessing.current_process().pid) # This is the name for the subsubdirecotry.
+    if not os.path.isdir(WorkDir): # Then it checks if the subsubdirectory already exists. 
         os.mkdir(WorkDir)
     Logger.ReadWrite.start()
     shutil.copy(CommandHome + '/SiestaFiles/template.fdf', WorkDir + '/')
@@ -803,8 +807,9 @@ def SIESTA(config,CommandHome,NumberOfSiestaCores,Logger,ghost=None):
     Logger.ReadWrite.start()
     with open(WorkDir + '/template.out','r') as file:
         for line in file:
-            if 'siesta: Eharris(eV) =' in line:
+            if ('siesta: Eharris(eV) =' in line) or ('siesta: E_KS(eV) =' in line):
                 line = line.replace('siesta: Eharris(eV) =','')
+                line = line.replace('siesta: E_KS(eV) =','')
                 Energy = float(line)
                 break
         file.close()
@@ -851,54 +856,63 @@ def attach(adsorbent,admolecule,RightSide=None):
 # supplied.  This will only work for surfaces that are reletively thin and flat. 
 # <RightSide> should be 3-element numpy array
 #====================================================================================
+    # Note: Function under constuction. 
+    # Note: Could add vectorization ro remove redundancies.  
+    # Note: Since I' no longer using bse I could get rid of statsmodels prerequisite. 
     # First make coppies of the arguments to prevent side effects: 
     admolecule = copy.deepcopy(admolecule)
     adsorbent = copy.deepcopy(adsorbent)    
-    # Then perform 3 linear regressions on the adsorbent, and take the one with the 
-    # lowest error. This represents it as a plane: 
+    # Then perform 3 linear regressions on the adsorbent, create normal vectors to the 
+    # detmerined planes, then project the admolecule atomic positions onto the norma 
+    # vectors, then take the distribution with the lowest range. This represents it 
+    # as a plane. 
     x = adsorbent.coord[:,0]
     y = adsorbent.coord[:,1]
     z = adsorbent.coord[:,2]
     Norms = np.zeros((3,3))
-    RMSError = np.zeros(3)
+    AdsorbentDists = np.zeros((3,len(adsorbent.anum)))
+    Widths = np.zeros(3)
     #Regression 1:
     X = np.column_stack((y,z))
     X = sm.add_constant(X) # Design matrix
     Z = x # Dependent variable
     results = sm.OLS(Z,X).fit()
-    b = results.params[0]
     m1 = results.params[1]
     m2 = results.params[2]
-    Norms[0] = np.array((1/b,-m1/b,-m2/b))
-    RMSError[0] = np.linalg.norm(results.bse)
+    Norms[0] = np.array((1,-m1,-m2))
+    Norms[0] = Norms[0] / np.linalg.norm(Norms[0])
+    AdsorbentDists[0] = np.dot(adsorbent.coord,Norms[0])
+    Widths[0] = np.ptp(AdsorbentDists[0])
     #Regression 2:
     X = np.column_stack((z,x))
     X = sm.add_constant(X) # Design matrix
     Z = y # Dependent variable
     results = sm.OLS(Z,X).fit()
-    b = results.params[0]
     m1 = results.params[1]
     m2 = results.params[2]
-    Norms[1] = np.array((-m2/b,1/b,-m1/b))
-    RMSError[1] = np.linalg.norm(results.bse)
+    Norms[1] = np.array((-m2,1,-m1))
+    Norms[1] = Norms[1] / np.linalg.norm(Norms[1])
+    AdsorbentDists[1] = np.dot(adsorbent.coord,Norms[1])
+    Widths[1] = np.ptp(AdsorbentDists[1])
     #Regression 1:
     X = np.column_stack((x,y))
     X = sm.add_constant(X) # Design matrix
     Z = z # Dependent variable
     results = sm.OLS(Z,X).fit()
-    b = results.params[0]
     m1 = results.params[1]
     m2 = results.params[2]
-    Norms[2] = np.array((-m1/b,-m2/b,1/b))
-    RMSError[2] = np.linalg.norm(results.bse)
-    # Then we just choose the norm with the lease RMS error and we normalize:
-    Norm = Norms[np.argmin(RMSError)]
-    Norm = Norm / np.linalg.norm(Norm)
+    Norms[2] = np.array((-m1,-m2,1))
+    Norms[2] = Norms[2] / np.linalg.norm(Norms[2])
+    AdsorbentDists[2] = np.dot(adsorbent.coord,Norms[2])
+    Widths[2] = np.ptp(AdsorbentDists[2])
+    # Then we just choose the disribution with the lowest range and we choose the
+    # corresponding norm:
+    Norm = Norms[np.argmin(Widths)]
+    AdsorbentDist = AdsorbentDists[np.argmin(Widths)]
     # If the user specified a side, we will orient the Norm in that direction.
     if RightSide != None:
         Norm = np.dot(Norm,RightSide) / np.linalg.norm(RightSide)
     # Then we project all adsorbent atoms' positions of the adsorbent onto the norm:
-    AdsorbentDist = np.dot(adsorbent.coord,Norm)
     AdsorbentDist = AdsorbentDist - np.average(AdsorbentDist)
     # We do the same with the admolecule:
     AdmoleculeDist = np.dot(admolecule.coord,Norm)
@@ -948,7 +962,7 @@ def attach(adsorbent,admolecule,RightSide=None):
     adsorbent.anum = np.append(adsorbent.anum,admolecule.anum)
     adsorbent.AdmoleculeSize = len(admolecule.anum)
     return ConfigClass(adsorbent)
-
+    
 #====================================================================================
 def move(config,TransLimit,RhoLimitDeg):
 # Returns a randomly pertubed configuration given an original configuration. This
@@ -958,19 +972,19 @@ def move(config,TransLimit,RhoLimitDeg):
 #====================================================================================
     RhoLimitDeg = min(RhoLimitDeg,360)    
     CopyConfig = copy.deepcopy(config)
-    ThetaTrans = np.random.rand() * 2 * np.pi
-    CosPhiTrans = np.random.rand() * 2 - 1
+    PhiTrans = np.random.rand() * 2 * np.pi
+    CosThetaTrans = np.random.rand() * 2 - 1
     RandTrans = np.array((0.0,0.0,0.0))
-    RandTrans[0] = np.cos(ThetaTrans) * np.sqrt(1-CosPhiTrans**2)
-    RandTrans[1] = np.sin(ThetaTrans) * np.sqrt(1-CosPhiTrans**2)
-    RandTrans[2] = CosPhiTrans
+    RandTrans[0] = np.cos(PhiTrans) * np.sqrt(1-CosThetaTrans**2)
+    RandTrans[1] = np.sin(PhiTrans) * np.sqrt(1-CosThetaTrans**2)
+    RandTrans[2] = CosThetaTrans
     RandTrans = RandTrans * np.random.rand() * TransLimit
-    ThetaTurn = np.random.rand() * 2 * np.pi
-    CosPhiTurn = np.random.rand() * 2 - 1
+    PhiTurn = np.random.rand() * 2 * np.pi
+    CosThetaTurn = np.random.rand() * 2 - 1
     RandAxis = np.array((0.0,0.0,0.0))
-    RandAxis[0] = np.cos(ThetaTurn) * np.sqrt(1-CosPhiTurn**2)
-    RandAxis[1] = np.sin(ThetaTurn) * np.sqrt(1-CosPhiTurn**2)
-    RandAxis[2] = CosPhiTurn
+    RandAxis[0] = np.cos(PhiTurn) * np.sqrt(1-CosThetaTurn**2)
+    RandAxis[1] = np.sin(PhiTurn) * np.sqrt(1-CosThetaTurn**2)
+    RandAxis[2] = CosThetaTurn
     RandRho = (2 * np.random.rand() - 1) * RhoLimitDeg
     # Note: I just adjusted it so Translimit is absolute (it is now normalized)
     # Note: Here is a good place to get material for my honors!
@@ -1013,32 +1027,31 @@ def moveR(config,Dummy,TransLimit,dummy):
 def shepherd(config):
 # This function checks if the admolecule centroid is more than 1 unit cell from the
 # admolecule centroid in X or Y, and, if so, moves it 1 unit cell back toward the centroid.
-# Note: Impliment this into the actual cycle funcition.
-# Note: This actually doesn't see mto be working that well so reconsider a way to make it actually on the midle microcell.
-# Note: Fix this so it actually confines it to one unitcell.
 #====================================================================================
     CopyConfig = ConfigClass(config)  # Note: I chose to do ConfigClass rather than deepcopy because it checks to make sure you are using ConfigClass and has error handling.
+    # First it imports preferences from the MC_Pref.py file:
     try:
         from MC_Pref import SubLatticeGrid
     except ImportError:
         from MC_Defults import SubLatticeGrid
-    # This defines a small lattice basis matrix and objects that represent the two bodies (adsorbant admolecule):
+    # First we define a lattice basis matrix:
     fence = config.LatticeMatrix / SubLatticeGrid
+    # Then we split the config int adsorbent and admolecule:
     adsorbent=ConfigClass(config.adsorbent())
     admolecule=ConfigClass(config.admolecule())
+    # We record the total number of config atoms.  (Used later:)
     SystemSize=len(CopyConfig.anum)
-    # Then it computes the cetnroids and the vector difference between them:
+    # Then it represents the admolecule position as the difference between the two cetnroids:
     dCentroid = admolecule.centroid() - adsorbent.centroid()
     # Then it projects the difference in centroids onto the lattice basis.
     coeff = np.linalg.solve(fence,dCentroid)
-    # Then it gets rid of leading whole numbers on the lattice vector coefficients...
-    # ...to move it back toward the center and then substacts the differnce in...
-    # ...resulting vectors from the adsorbates position:
+    # Then it limits the position to a single lattice cell with shift upward, followed by 
+    # modulus followed by a shift downward.
     ModCoeff = ((coeff+0.5)%1)-0.5
     yank = np.dot(fence,(ModCoeff-coeff))
     admolecule.coord = admolecule.coord + yank
-    NewConfig = ConfigClass(CopyConfig) # Note: I might want to use deepcopy in these cases because it's faster and I don't have to check it.
-    NewConfig.coord[SystemSize-config.AdmoleculeSize:SystemSize] = admolecule.coord # Note: Once again, it feels silly that I am copying twice like this.  Find a graceful way to get this done.
+    NewConfig = ConfigClass(CopyConfig)
+    NewConfig.coord[SystemSize-config.AdmoleculeSize:SystemSize] = admolecule.coord
     return NewConfig
 
 #====================================================================================
